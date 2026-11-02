@@ -23,7 +23,18 @@ If Coolify Supabase exposes Supavisor pooler, use the pooler host/port it docume
 
 1. Deploy Supabase (Postgres) on Coolify.
 2. Run `sql/001_init.sql` against the DB (Supabase SQL editor or `psql`).
-3. New **Application** → this `api/` folder, Dockerfile build.
+3. New **Application** → GitHub repo `NoahWhiteson/Wishlist`, branch `main`.
+
+**Build settings (pick one):**
+
+| Setting | Option A (recommended) | Option B |
+|--------|-------------------------|----------|
+| Base directory | `/` (repo root) | `/api` |
+| Dockerfile | `/Dockerfile` | `/Dockerfile` |
+
+Option A uses the root `Dockerfile` (build context = whole repo, iOS files excluded via `.dockerignore`).  
+Option B uses `api/Dockerfile` with context only under `api/`.
+
 4. Env vars:
    - `DATABASE_URL` → `wishlist_api` connection string (internal Docker network hostname if API and DB are on same Coolify host).
    - `API_KEY` → long random string; iOS sends `X-API-Key` header.
