@@ -38,7 +38,13 @@ struct ProductImageView: View {
 enum ProductImagePrefetcher {
     static func prefetchHeroes(for products: [Product], from start: Int = 0, count: Int = 8) async {
         guard !products.isEmpty else { return }
-        let scale = await MainActor.run { UIScreen.main.scale }
+        let scale = await MainActor.run {
+            #if os(iOS)
+            UIScreen.main.scale
+            #else
+            2.0
+            #endif
+        }
         var urls: [URL] = []
         urls.reserveCapacity(count)
         for offset in 0 ..< count {
