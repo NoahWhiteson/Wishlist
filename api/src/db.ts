@@ -1,4 +1,5 @@
 import pg from "pg";
+import { prepareDatabaseUrl } from "./pgSsl.js";
 
 const { Pool } = pg;
 
@@ -11,9 +12,11 @@ export function getPool(): pg.Pool {
       throw new Error("DATABASE_URL is required");
     }
 
+    const prepared = prepareDatabaseUrl(connectionString);
+
     pool = new Pool({
-      connectionString,
-      ssl: process.env.PGSSL === "true" ? { rejectUnauthorized: false } : undefined,
+      connectionString: prepared.connectionString,
+      ssl: prepared.ssl,
       max: 10,
     });
   }

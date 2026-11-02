@@ -84,6 +84,11 @@ extension ProductImageSource {
         }
         return .asset(value)
     }
+
+    var remoteURL: URL? {
+        if case .remote(let url) = self { return url }
+        return nil
+    }
 }
 
 extension Product {

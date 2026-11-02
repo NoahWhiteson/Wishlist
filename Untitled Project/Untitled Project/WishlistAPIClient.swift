@@ -41,7 +41,33 @@ enum WishlistAPIError: Error {
 actor WishlistAPIClient {
     static let shared = WishlistAPIClient()
 
-    func fetchProducts(limit: Int = 50, offset: Int = 0) async throws -> [Product] {
+    private var cachedProducts: [Product]?
+    private let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.urlCache = URLCache(memoryCapacity: 8_000_000, diskCapacity: 32_000_000)
+        config.requestCachePolicy = .returnCacheDataElseLoad
+        config.timeoutIntervalForRequest = 15
+        return URLSession(configuration: config)
+    }()
+
+    func cachedProductsSnapshot() -> [Product]? {
+        cachedProducts
+    }
+
+    func warmStart() async {
+        guard !WishlistConfig.apiKey.isEmpty else { return }
+        _ = try? await fetchProducts(forceRefresh: false)
+    }
+
+    func fetchProducts(limit: Int = 50, offset: Int = 0, forceRefresh: Bool = true) async throws -> [Product] {
+        if offset == 0, !forceRefresh, let cachedProducts, !cachedProducts.isEmpty {
+            return cachedProducts
+        }
+
+        if forceRefresh, offset == 0 {
+            cachedProducts = nil
+        }
+
         let key = WishlistConfig.apiKey
         guard !key.isEmpty else { throw WishlistAPIError.missingAPIKey }
 
@@ -49,15 +75,23 @@ actor WishlistAPIClient {
             url: WishlistConfig.apiBaseURL.appendingPathComponent("v1/products"),
             resolvingAgainstBaseURL: false
         )!
-        components.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "limit", value: String(limit)),
             URLQueryItem(name: "offset", value: String(offset)),
         ]
+        if forceRefresh {
+            queryItems.append(URLQueryItem(name: "_refresh", value: String(Int(Date().timeIntervalSince1970 * 1000))))
+        }
+        components.queryItems = queryItems
 
         var request = URLRequest(url: components.url!)
         request.setValue(key, forHTTPHeaderField: "X-API-Key")
+        request.cachePolicy = forceRefresh ? .reloadIgnoringLocalCacheData : .returnCacheDataElseLoad
+        if forceRefresh {
+            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw WishlistAPIError.badStatus(-1)
         }
@@ -67,9 +101,23 @@ actor WishlistAPIClient {
 
         do {
             let decoded = try JSONDecoder().decode(ProductsListResponse.self, from: data)
-            return decoded.data.map(Product.init(dto:))
+            let mapped = decoded.data.map(Product.init(dto:))
+            if offset == 0 {
+                cachedProducts = mapped
+                Task.detached(priority: .userInitiated) {
+                    await ProductImagePrefetcher.prefetchHeroes(for: mapped, from: 0, count: min(mapped.count, 12))
+                }
+            }
+            return mapped
         } catch {
             throw WishlistAPIError.decoding(error)
+        }
+    }
+
+    func prefetchNeighbors(in products: [Product], around index: Int) {
+        guard !products.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            await ProductImagePrefetcher.prefetchHeroes(for: products, from: index, count: min(products.count, 4))
         }
     }
 }

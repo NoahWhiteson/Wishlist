@@ -2,7 +2,10 @@ import SwiftUI
 
 struct ProductDiscoveryView: View {
     let product: Product
+    var isBackdrop: Bool = false
     var onSwipeFinished: (() -> Void)? = nil
+    var onRefresh: (() -> Void)? = nil
+    @Binding var isFeedRefreshing: Bool
 
     @State private var selectedNavTab: NavTab = .home
     @State private var saved = false
@@ -10,11 +13,44 @@ struct ProductDiscoveryView: View {
     @State private var detailsReveal: CGFloat = 0
     @State private var measuredDetailsHeight: CGFloat = 0
     @State private var dragTranslation: CGSize = .zero
+    @State private var dragLock: DragLock? = nil
     @State private var isSwipeAnimating = false
+    @State private var skipProductChangeReset = false
+    @State private var pullHapticStep = 0
+    @State private var pullOffsetDisplay: CGFloat = 0
+    @State private var latchedSwipeFeedback: SwipeAction? = nil
     @State private var screenWidth: CGFloat = 390
+    @State private var screenHeight: CGFloat = 844
+
+    init(
+        product: Product,
+        isBackdrop: Bool = false,
+        onSwipeFinished: (() -> Void)? = nil,
+        onRefresh: (() -> Void)? = nil,
+        isFeedRefreshing: Binding<Bool> = .constant(false)
+    ) {
+        self.product = product
+        self.isBackdrop = isBackdrop
+        self.onSwipeFinished = onSwipeFinished
+        self.onRefresh = onRefresh
+        _isFeedRefreshing = isFeedRefreshing
+    }
+
+    private enum DragLock {
+        case horizontal
+        case pullDown
+        case detailsAdjust
+    }
+
+    @State private var detailsRevealAtDragStart: CGFloat = 0
 
     private let expandSpring = Animation.spring(response: 0.52, dampingFraction: 0.86)
-    private let swipeSpring = Animation.interactiveSpring(response: 0.38, dampingFraction: 0.82, blendDuration: 0.12)
+    private let swipeSpring = Animation.interactiveSpring(response: 0.42, dampingFraction: 0.88, blendDuration: 0.15)
+    private let swipeExitSpring = Animation.interactiveSpring(response: 0.48, dampingFraction: 0.92, blendDuration: 0.1)
+    private let bottomNavBarHeight: CGFloat = 44
+    private let actionNavGap: CGFloat = 20
+    private let chromeLift: CGFloat = 14
+    private var navTabLift: CGFloat { (actionNavGap + 12) / 2 }
 
     private enum NavTab: CaseIterable {
         case home
@@ -46,126 +82,175 @@ struct ProductDiscoveryView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                WishlistTheme.background
+                if isBackdrop {
+                    WishlistTheme.background
+                }
 
-                swipeFeedbackBackground
-                    .opacity(detailsReveal < 0.05 ? 1 : 0)
+                if !isBackdrop {
+                    swipeFeedbackBackground
+                        .opacity(detailsReveal < 0.05 ? 1 : 0)
+                }
 
-                swipeableCard(screenWidth: geo.size.width)
+                let bottomNavReserve =
+                    bottomNavBarHeight + geo.safeAreaInsets.bottom + actionNavGap + 12
 
-                topNavScrim(safeAreaTop: geo.safeAreaInsets.top)
+                swipeableCard(
+                    screenWidth: geo.size.width,
+                    bottomNavReserve: bottomNavReserve,
+                    safeTop: geo.safeAreaInsets.top
+                )
+                    .padding(.bottom, bottomNavReserve)
+                    .zIndex(1)
 
-                topBar
-                    .padding(.top, geo.safeAreaInsets.top + 34)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                if !isBackdrop {
+                    bottomNavScrim(safeAreaBottom: geo.safeAreaInsets.bottom)
+
+                    bottomNavChrome(safeBottom: geo.safeAreaInsets.bottom)
+                        .offset(y: -navTabLift)
+                        .zIndex(50)
+                }
             }
-            .onAppear { screenWidth = geo.size.width }
+            .onAppear {
+                screenWidth = geo.size.width
+                screenHeight = geo.size.height
+            }
             .onChange(of: geo.size.width) { _, width in
                 screenWidth = width
+            }
+            .onChange(of: geo.size.height) { _, height in
+                screenHeight = height
             }
         }
         .ignoresSafeArea()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WishlistTheme.background)
         .preferredColorScheme(.dark)
+        .onChange(of: product.id) { _, _ in
+            dragLock = nil
+            showDetails = false
+            detailsReveal = 0
+
+            if skipProductChangeReset {
+                return
+            }
+
+            dragTranslation = .zero
+            isSwipeAnimating = false
+            saved = false
+            pullHapticStep = 0
+            pullOffsetDisplay = 0
+            latchedSwipeFeedback = nil
+        }
     }
 
-    private func swipeableCard(screenWidth: CGFloat) -> some View {
+    private func swipeableCard(screenWidth: CGFloat, bottomNavReserve: CGFloat, safeTop: CGFloat) -> some View {
         GeometryReader { cardGeo in
-            let topInset = cardGeo.safeAreaInsets.top + 88
-            let bottomSafeInset = cardGeo.safeAreaInsets.bottom
-            let bottomBarHeight: CGFloat = 72 + bottomSafeInset
+            let topInset = cardGeo.safeAreaInsets.top + 12
+            let actionBarHeight: CGFloat = 64
+            let bottomBarHeight = actionBarHeight + 8
             let expandedPanelHeight = max(cardGeo.size.height - topInset - bottomBarHeight, 200)
-            let isExpanded = detailsReveal > 0.02
+            let summaryClearance: CGFloat = 168
 
-            ZStack {
-                heroBackground
-
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-
-                    ScrollView(showsIndicators: false) {
-                        productInfoContent
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 16)
+            Group {
+                if isBackdrop {
+                    ZStack {
+                        heroBackground(bottomNavReserve: bottomNavReserve)
+                        bottomContentFade(
+                            cardHeight: cardGeo.size.height,
+                            bottomNavReserve: bottomNavReserve
+                        )
                     }
-                    .scrollDisabled(!isExpanded)
-                    .fixedSize(horizontal: false, vertical: !isExpanded)
-                    .frame(maxHeight: isExpanded ? expandedPanelHeight : nil, alignment: .bottom)
+                } else {
+                    ZStack(alignment: .top) {
+                        WishlistTheme.background
 
-                    bottomBar(bottomInset: bottomSafeInset)
+                        pullRefreshHeader(safeTop: safeTop)
+
+                        cardChromeLayer(
+                            topInset: topInset,
+                            expandedPanelHeight: expandedPanelHeight,
+                            summaryClearance: summaryClearance
+                        )
+                        .opacity(swipeChromeOpacity)
+
+                        heroSwipeLayer(
+                            cardGeo: cardGeo,
+                            bottomNavReserve: bottomNavReserve
+                        )
+                    }
                 }
-                .padding(.top, topInset)
-
-                swipeStampOverlay
             }
             .frame(width: cardGeo.size.width, height: cardGeo.size.height)
-            .modifier(SwipeCardMorphModifier(progress: swipeMorphProgress))
+            .gesture(isBackdrop ? nil : cardDragGesture(screenWidth: screenWidth))
+            .allowsHitTesting(!isBackdrop && !isSwipeAnimating)
         }
-        .offset(x: dragTranslation.width, y: dragTranslation.height * 0.12)
-        .rotationEffect(.degrees(Double(dragTranslation.width / 16)))
-        .gesture(cardDragGesture(screenWidth: screenWidth))
-        .allowsHitTesting(!isSwipeAnimating)
     }
 
-    private var swipeStampOverlay: some View {
-        ZStack {
-            swipeStamp(
-                title: "NOPE",
-                color: .red,
-                alignment: .topLeading,
-                rotation: 12,
-                opacity: nopeStampOpacity
-            )
-
-            swipeStamp(
-                title: "LIKE",
-                color: WishlistTheme.accent,
-                alignment: .topTrailing,
-                rotation: -12,
-                opacity: likeStampOpacity
-            )
-        }
-        .padding(28)
-        .allowsHitTesting(false)
-    }
-
-    private func swipeStamp(
-        title: String,
-        color: Color,
-        alignment: Alignment,
-        rotation: Double,
-        opacity: Double
+    @ViewBuilder
+    private func cardChromeLayer(
+        topInset: CGFloat,
+        expandedPanelHeight: CGFloat,
+        summaryClearance: CGFloat
     ) -> some View {
-        Text(title)
-            .font(.system(size: 34, weight: .heavy))
-            .tracking(2)
-            .foregroundStyle(color)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(color, lineWidth: 4)
+        ZStack(alignment: .bottom) {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+
+                productSummaryHeader
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
+
+                bottomBar
+                    .padding(.bottom, actionNavGap)
             }
-            .rotationEffect(.degrees(rotation))
-            .opacity(opacity)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+            .padding(.top, topInset)
+            .offset(y: -chromeLift)
+
+            detailsDrawer(maxHeight: expandedPanelHeight, bottomClearance: summaryClearance)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var likeStampOpacity: Double {
-        Double(min(max((dragTranslation.width - 40) / 100, 0), 1))
+    @ViewBuilder
+    private func heroSwipeLayer(cardGeo: GeometryProxy, bottomNavReserve: CGFloat) -> some View {
+        ZStack {
+            heroBackground(bottomNavReserve: bottomNavReserve)
+
+            bottomContentFade(
+                cardHeight: cardGeo.size.height,
+                bottomNavReserve: bottomNavReserve
+            )
+        }
+        .frame(width: cardGeo.size.width, height: cardGeo.size.height)
+        .offset(x: dragTranslation.width, y: heroVerticalNudge)
+        .rotationEffect(.degrees(cardRotation))
+        .offset(y: pullOffsetDisplay)
+        .modifier(SwipeCardMorphModifier(progress: swipeMorphProgress))
     }
 
-    private var nopeStampOpacity: Double {
-        Double(min(max((-dragTranslation.width - 40) / 100, 0), 1))
+    private var swipeChromeOpacity: Double {
+        if pullOffsetDisplay > 1 { return 1 }
+        if isSwipeAnimating { return 0.06 }
+        let width = abs(dragTranslation.width)
+        if width < 6 { return 1 }
+        return max(0.05, 1 - swipeRevealProgress(for: width) * 0.96)
+    }
+
+    private var heroVerticalNudge: CGFloat {
+        if pullOffsetDisplay > 0.5 { return 0 }
+        return dragTranslation.height * 0.12
     }
 
     private var likeBackgroundOpacity: Double {
+        if isSwipeAnimating, latchedSwipeFeedback == .like { return 1 }
+        if isSwipeAnimating, latchedSwipeFeedback == .dismiss { return 0 }
         guard dragTranslation.width > 0 else { return 0 }
         return swipeRevealProgress(for: dragTranslation.width)
     }
 
     private var nopeBackgroundOpacity: Double {
+        if isSwipeAnimating, latchedSwipeFeedback == .dismiss { return 1 }
+        if isSwipeAnimating, latchedSwipeFeedback == .like { return 0 }
         guard dragTranslation.width < 0 else { return 0 }
         return swipeRevealProgress(for: dragTranslation.width)
     }
@@ -196,12 +281,83 @@ struct ProductDiscoveryView: View {
         .allowsHitTesting(false)
     }
 
+    private func pullRefreshHeader(safeTop: CGFloat) -> some View {
+        let ready = pullRefreshProgress >= 0.58
+        let showHeader = pullRefreshProgress > 0.01 || isFeedRefreshing
+
+        return HStack(spacing: 8) {
+            if isFeedRefreshing || pullRefreshProgress > 0.02 {
+                ProgressView()
+                    .tint(.white)
+            }
+            Text(isFeedRefreshing ? "Refreshing…" : (ready ? "Release to refresh" : "Refresh"))
+                .font(.subheadline.weight(.semibold))
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.top, safeTop + 36)
+        .padding(.bottom, 12)
+        .background(WishlistTheme.background)
+        .allowsHitTesting(false)
+        .accessibilityHidden(!showHeader && !isFeedRefreshing)
+    }
+
+    private var cardRotation: Double {
+        Double(dragTranslation.width / 22)
+    }
+
+    private var pullDownLimit: CGFloat {
+        screenHeight * 0.20
+    }
+
+    private var pullRefreshProgress: Double {
+        guard pullOffsetDisplay > 0, pullDownLimit > 0 else { return 0 }
+        return min(Double(pullOffsetDisplay / pullDownLimit), 1)
+    }
+
+    private func resistedPullDown(raw: CGFloat) -> CGFloat {
+        let limit = pullDownLimit
+        guard raw > 0, limit > 0 else { return 0 }
+        let softCap = limit * (1 - exp(-raw / (limit * 0.75)))
+        return min(raw * 0.68, softCap)
+    }
+
+    private func updatePullHaptics(for progress: Double) {
+        let step = min(4, Int(progress * 4.0) + (progress >= 0.98 ? 1 : 0))
+        guard step != pullHapticStep else { return }
+        pullHapticStep = step
+        switch step {
+        case 1:
+            WishlistHaptics.selection()
+        case 2, 3:
+            WishlistHaptics.light()
+        case 4...:
+            WishlistHaptics.medium()
+        default:
+            break
+        }
+    }
+
     private var swipeMorphProgress: CGFloat {
-        CGFloat(swipeRevealProgress(for: dragTranslation.width))
+        guard dragLock != .pullDown else { return 0 }
+        return CGFloat(swipeRevealProgress(for: dragTranslation.width))
     }
 
     private func swipeRevealProgress(for width: CGFloat) -> Double {
         smoothStep(min(max(abs(width) / 140, 0), 1))
+    }
+
+    private func resetSwipeInteraction(animated: Bool) {
+        pullHapticStep = 0
+        pullOffsetDisplay = 0
+        latchedSwipeFeedback = nil
+        if animated {
+            withAnimation(swipeSpring) {
+                dragTranslation = .zero
+            }
+        } else {
+            dragTranslation = .zero
+        }
     }
 
     private func smoothStep(_ t: CGFloat) -> Double {
@@ -210,30 +366,135 @@ struct ProductDiscoveryView: View {
     }
 
     private func cardDragGesture(screenWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 12)
+        DragGesture(minimumDistance: 20)
             .onChanged { value in
-                guard detailsReveal < 0.05, !isSwipeAnimating else { return }
-                dragTranslation = value.translation
-            }
-            .onEnded { value in
-                guard detailsReveal < 0.05, !isSwipeAnimating else {
-                    withAnimation(swipeSpring) { dragTranslation = .zero }
-                    return
+                guard !isSwipeAnimating else { return }
+
+                if dragLock == nil {
+                    let w = abs(value.translation.width)
+                    let h = abs(value.translation.height)
+                    if w > 28 || h > 28 {
+                        if detailsReveal < 0.05, w > h * 1.65 {
+                            dragLock = .horizontal
+                            latchedSwipeFeedback = value.translation.width >= 0 ? .like : .dismiss
+                        } else if h > w * 1.25, value.translation.height > 12, detailsReveal < 0.05 {
+                            dragLock = .pullDown
+                        } else if h > w * 1.15, abs(value.translation.height) > 14 {
+                            dragLock = .detailsAdjust
+                            detailsRevealAtDragStart = detailsReveal
+                        }
+                    }
                 }
 
-                let threshold = screenWidth * 0.28
-                let predicted = value.predictedEndTranslation.width
-
-                if value.translation.width > threshold || predicted > 520 {
-                    commitSwipe(.like, screenWidth: screenWidth)
-                } else if value.translation.width < -threshold || predicted < -520 {
-                    commitSwipe(.dismiss, screenWidth: screenWidth)
-                } else {
-                    withAnimation(swipeSpring) {
-                        dragTranslation = .zero
+                switch dragLock {
+                case .horizontal:
+                    guard detailsReveal < 0.05 else { return }
+                    dragTranslation = CGSize(width: value.translation.width, height: value.translation.height * 0.06)
+                    pullOffsetDisplay = 0
+                    if value.translation.width > 8 {
+                        latchedSwipeFeedback = .like
+                    } else if value.translation.width < -8 {
+                        latchedSwipeFeedback = .dismiss
+                    }
+                case .detailsAdjust:
+                    let delta = -value.translation.height / 300
+                    let next = min(1, max(0, detailsRevealAtDragStart + delta))
+                    detailsReveal = next
+                    showDetails = next > 0.04
+                case .pullDown:
+                    guard detailsReveal < 0.05 else { return }
+                    latchedSwipeFeedback = nil
+                    let resisted = resistedPullDown(raw: max(value.translation.height, 0))
+                    dragTranslation = CGSize(width: value.translation.width * 0.12, height: resisted)
+                    pullOffsetDisplay = resisted
+                    updatePullHaptics(for: pullRefreshProgress)
+                case nil:
+                    if detailsReveal < 0.05,
+                       value.translation.height > max(abs(value.translation.width), 10),
+                       value.translation.height > 0 {
+                        latchedSwipeFeedback = nil
+                        let resisted = resistedPullDown(raw: value.translation.height)
+                        pullOffsetDisplay = resisted
+                        dragTranslation = CGSize(
+                            width: value.translation.width * 0.12,
+                            height: resisted
+                        )
+                    } else {
+                        pullOffsetDisplay = 0
+                        dragTranslation = value.translation
                     }
                 }
             }
+            .onEnded { value in
+                let endedLock = dragLock
+                defer { dragLock = nil }
+
+                if endedLock == .detailsAdjust {
+                    withAnimation(expandSpring) {
+                        if detailsReveal > 0.32 {
+                            detailsReveal = 1
+                            showDetails = true
+                        } else {
+                            detailsReveal = 0
+                            showDetails = false
+                        }
+                    }
+                    return
+                }
+
+                guard detailsReveal < 0.05, !isSwipeAnimating else {
+                    resetSwipeInteraction(animated: true)
+                    return
+                }
+
+                let threshold = screenWidth * 0.42
+                let predictedW = value.predictedEndTranslation.width
+                let width = value.translation.width
+                let height = value.translation.height
+                let resistedEnd = resistedPullDown(raw: max(height, 0))
+                let endPullProgress = pullDownLimit > 0 ? min(Double(resistedEnd / pullDownLimit), 1) : 0
+                let isPullRelease = endedLock == .pullDown
+                    || (height > 28 && height > abs(width) * 1.1)
+
+                if isPullRelease {
+                    if endPullProgress >= 0.58 {
+                        commitRefresh()
+                    } else {
+                        withAnimation(.spring(response: 0.36, dampingFraction: 0.88)) {
+                            pullHapticStep = 0
+                            pullOffsetDisplay = 0
+                            latchedSwipeFeedback = nil
+                            dragTranslation = .zero
+                        }
+                    }
+                    return
+                }
+
+                guard endedLock == .horizontal || abs(width) > abs(height) * 1.85 else {
+                    resetSwipeInteraction(animated: true)
+                    return
+                }
+
+                if width > threshold || predictedW > 720 {
+                    commitSwipe(.like, screenWidth: screenWidth)
+                } else if width < -threshold || predictedW < -720 {
+                    commitSwipe(.dismiss, screenWidth: screenWidth)
+                } else {
+                    resetSwipeInteraction(animated: true)
+                }
+            }
+    }
+
+    private func commitRefresh() {
+        guard !isSwipeAnimating, !isFeedRefreshing else { return }
+        WishlistHaptics.success()
+        onRefresh?()
+        pullHapticStep = 0
+
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.9)) {
+            dragTranslation = .zero
+            pullOffsetDisplay = 0
+        }
     }
 
     private func commitSwipe(_ action: SwipeAction, screenWidth: CGFloat) {
@@ -247,37 +508,48 @@ struct ProductDiscoveryView: View {
             WishlistHaptics.medium()
         }
 
-        let exitX = (action == .like ? 1 : -1) * (screenWidth + 120)
+        let direction: CGFloat = action == .like ? 1 : -1
+        latchedSwipeFeedback = action
+        let exitX = direction * (screenWidth * 1.35)
+        let cardExitSpring = Animation.spring(response: 0.44, dampingFraction: 0.92)
+        let cardEnterSpring = Animation.spring(response: 0.5, dampingFraction: 0.9)
 
-        withAnimation(swipeSpring) {
-            dragTranslation = CGSize(width: exitX, height: 36)
+        withAnimation(cardExitSpring) {
+            dragTranslation = CGSize(width: exitX, height: 12)
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.34) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.38) {
             setDetailsExpanded(false)
             saved = action == .like
 
-            withAnimation(.spring(response: 0.52, dampingFraction: 0.86)) {
+            skipProductChangeReset = true
+            let enterX = -direction * (screenWidth * 1.08)
+            dragTranslation = CGSize(width: enterX, height: 0)
+
+            onSwipeFinished?()
+
+            withAnimation(cardEnterSpring) {
                 dragTranslation = .zero
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.48) {
+                skipProductChangeReset = false
                 isSwipeAnimating = false
-                onSwipeFinished?()
+                latchedSwipeFeedback = nil
             }
         }
     }
 
-    private var heroBackground: some View {
+    private func heroBackground(bottomNavReserve: CGFloat) -> some View {
         GeometryReader { geo in
+            let heroHeight = max(geo.size.height - bottomNavReserve * 0.35, geo.size.height * 0.88)
+
             ZStack {
-                ProductImageView(source: product.heroImage)
-                    .interpolation(.high)
-                    .antialiased(true)
+                ProductImageView(source: product.heroImage, highQuality: true)
                     .scaledToFill()
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .scaleEffect(1.02 - (0.02 * detailsReveal))
-                    .frame(width: geo.size.width, height: geo.size.height)
+                    .frame(width: geo.size.width, height: heroHeight)
+                    .scaleEffect(1 - (0.02 * detailsReveal))
+                    .frame(width: geo.size.width, height: heroHeight, alignment: .top)
                     .clipped()
 
                 Color.black
@@ -287,45 +559,71 @@ struct ProductDiscoveryView: View {
                 LinearGradient(
                     stops: [
                         .init(color: .clear, location: 0),
-                        .init(color: .clear, location: 0.12),
-                        .init(color: .black.opacity(0.08 + (0.08 * detailsReveal)), location: 0.3),
-                        .init(color: .clear, location: 0.45 - (0.13 * detailsReveal)),
-                        .init(color: .black.opacity(0.5 + (0.2 * detailsReveal)), location: 0.62),
-                        .init(color: .black.opacity(0.82), location: 0.78),
-                        .init(color: .black.opacity(0.96), location: 0.92),
-                        .init(color: .black, location: 1)
+                        .init(color: .clear, location: 0.2),
+                        .init(color: .black.opacity(0.06 + (0.08 * detailsReveal)), location: 0.42),
+                        .init(color: .black.opacity(0.22 + (0.12 * detailsReveal)), location: 0.58),
+                        .init(color: .clear, location: 0.72)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .frame(width: geo.size.width, height: geo.size.height)
+                .frame(width: geo.size.width, height: heroHeight, alignment: .top)
                 .allowsHitTesting(false)
             }
-            .frame(width: geo.size.width, height: geo.size.height)
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
         }
-        .ignoresSafeArea()
     }
 
-    private func topNavScrim(safeAreaTop: CGFloat) -> some View {
+    private func bottomContentFade(cardHeight: CGFloat, bottomNavReserve: CGFloat) -> some View {
         LinearGradient(
             stops: [
-                .init(color: .black.opacity(0.82), location: 0),
-                .init(color: .black.opacity(0.62), location: 0.22),
-                .init(color: .black.opacity(0.38), location: 0.48),
-                .init(color: .black.opacity(0.12), location: 0.72),
-                .init(color: .clear, location: 1)
+                .init(color: .clear, location: 0),
+                .init(color: .black.opacity(0.08), location: 0.22),
+                .init(color: .black.opacity(0.32), location: 0.48),
+                .init(color: .black.opacity(0.62), location: 0.68),
+                .init(color: .black.opacity(0.86), location: 0.84),
+                .init(color: .black, location: 1)
             ],
             startPoint: .top,
             endPoint: .bottom
         )
-        .frame(height: safeAreaTop + 128)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(height: min(cardHeight * 0.58, 460) + bottomNavReserve * 0.25)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .allowsHitTesting(false)
     }
 
-    // MARK: - Top bar
+    private func bottomNavScrim(safeAreaBottom: CGFloat) -> some View {
+        LinearGradient(
+            stops: [
+                .init(color: .clear, location: 0),
+                .init(color: .black.opacity(0.2), location: 0.35),
+                .init(color: .black.opacity(0.55), location: 0.65),
+                .init(color: .black.opacity(0.88), location: 0.88),
+                .init(color: .black, location: 1)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: safeAreaBottom + bottomNavBarHeight + 96)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .allowsHitTesting(false)
+    }
 
-    private var topBar: some View {
+    // MARK: - Bottom tab bar
+
+    private func bottomNavChrome(safeBottom: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            bottomNavBar
+                .padding(.top, 8)
+                .padding(.bottom, safeBottom + 8)
+        }
+        .frame(maxWidth: .infinity)
+        .background(WishlistTheme.background)
+        .contentShape(Rectangle())
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    }
+
+    private var bottomNavBar: some View {
         HStack(spacing: 0) {
             ForEach(NavTab.allCases, id: \.self) { tab in
                 Button {
@@ -339,37 +637,33 @@ struct ProductDiscoveryView: View {
                         .symbolRenderingMode(.monochrome)
                         .foregroundStyle(selectedNavTab == tab ? .white : .white.opacity(0.42))
                         .frame(maxWidth: .infinity)
-                        .frame(height: 44)
+                        .frame(height: bottomNavBarHeight)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(tab.label)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 6)
+        .padding(.horizontal, 20)
     }
 
     // MARK: - Product info
 
-    private var productInfoContent: some View {
-        VStack(alignment: .leading, spacing: 10 + (14 * detailsReveal)) {
-            productSummaryHeader
-
-            expandingDetailsSection
+    private func detailsDrawer(maxHeight: CGFloat, bottomClearance: CGFloat) -> some View {
+        ScrollView(showsIndicators: false) {
+            expandedDetails
+                .background { ViewHeightReader() }
         }
-    }
-
-    private var expandingDetailsSection: some View {
-        expandedDetails
-            .background { ViewHeightReader() }
-            .onPreferenceChange(DetailsSectionHeightKey.self) { height in
-                if height > 0 {
-                    measuredDetailsHeight = height
-                }
+        .onPreferenceChange(DetailsSectionHeightKey.self) { height in
+            if height > 0 {
+                measuredDetailsHeight = height
             }
-            .frame(height: max(measuredDetailsHeight * detailsReveal, 0), alignment: .top)
-            .clipped()
-            .allowsHitTesting(detailsReveal > 0.05)
+        }
+        .frame(maxHeight: max(measuredDetailsHeight, maxHeight * 0.72) * detailsReveal, alignment: .bottom)
+        .clipped()
+        .padding(.horizontal, 20)
+        .padding(.bottom, bottomClearance)
+        .allowsHitTesting(detailsReveal > 0.08)
     }
 
     private func setDetailsExpanded(_ expanded: Bool) {
@@ -401,7 +695,7 @@ struct ProductDiscoveryView: View {
                 Text(product.title)
                     .font(.title2.weight(.bold))
                     .foregroundStyle(.white)
-                    .lineLimit(detailsReveal > 0.5 ? nil : 3)
+                    .lineLimit(3)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -428,7 +722,7 @@ struct ProductDiscoveryView: View {
             Text(product.descriptor)
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.72))
-                .lineLimit(detailsReveal > 0.5 ? nil : 2)
+                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(product.price)
@@ -482,8 +776,7 @@ struct ProductDiscoveryView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
                         ForEach(Array(product.galleryImages.enumerated()), id: \.offset) { _, source in
-                            ProductImageView(source: source)
-                                .resizable()
+                            ProductImageView(source: source, highQuality: true)
                                 .scaledToFill()
                                 .frame(width: 100, height: 100)
                                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -513,7 +806,7 @@ struct ProductDiscoveryView: View {
 
     // MARK: - Bottom bar
 
-    private func bottomBar(bottomInset: CGFloat) -> some View {
+    private var bottomBar: some View {
         HStack(spacing: 12) {
             Button {
                 commitSwipeFromButtons(.dismiss)
@@ -556,8 +849,8 @@ struct ProductDiscoveryView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, bottomInset + 10)
+        .padding(.top, 4)
+        .padding(.bottom, 4)
     }
 }
 
@@ -639,8 +932,8 @@ private struct SwipeCardMorphModifier: AnimatableModifier {
         content
             .compositingGroup()
             .clipShape(RoundedRectangle(cornerRadius: max(24 * progress, 0), style: .continuous))
-            .scaleEffect(1 - (0.1 * progress), anchor: .center)
-            .shadow(color: .black.opacity(0.35 * progress), radius: 18 * progress, y: 8 * progress)
+            .scaleEffect(1 - (0.08 * progress), anchor: .center)
+            .shadow(color: .black.opacity(0.3 * progress), radius: 16 * progress, y: 7 * progress)
     }
 }
 
