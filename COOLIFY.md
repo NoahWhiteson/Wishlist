@@ -5,11 +5,10 @@
 | Setting | Value |
 |---------|--------|
 | Build Pack | **Dockerfile** (not Nixpacks) |
-| Dockerfile | `/Dockerfile` |
+| Base Directory | `/` (repo root) |
+| Dockerfile | `/api/Dockerfile` or `/Dockerfile` |
 
-**Base directory** can be `/` or `/api` — root `Dockerfile` auto-detects both layouts.
-
-Optional: base `/api` + `/api/Dockerfile` also works.
+Coolify clones the **whole repo** and uses that as the Docker build context. Both Dockerfiles expect paths under `api/`.
 
 ## Environment variables
 
