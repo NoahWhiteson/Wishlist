@@ -5,6 +5,7 @@
 **/DerivedData/
 *.xcuserstate
 *.pbxuser
+Untitled Project/Untitled Project/WishlistSecrets.plist
 
 # API
 api/node_modules/

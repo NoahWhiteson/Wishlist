@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ProductDiscoveryView: View {
     let product: Product
+    var onSwipeFinished: (() -> Void)? = nil
 
     @State private var selectedNavTab: NavTab = .home
     @State private var saved = false
@@ -262,6 +263,7 @@ struct ProductDiscoveryView: View {
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                 isSwipeAnimating = false
+                onSwipeFinished?()
             }
         }
     }
@@ -269,8 +271,7 @@ struct ProductDiscoveryView: View {
     private var heroBackground: some View {
         GeometryReader { geo in
             ZStack {
-                Image(product.heroImageName)
-                    .resizable()
+                ProductImageView(source: product.heroImage)
                     .interpolation(.high)
                     .antialiased(true)
                     .scaledToFill()
@@ -480,8 +481,8 @@ struct ProductDiscoveryView: View {
                 sectionTitle("Gallery")
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
-                        ForEach(product.galleryImageNames, id: \.self) { name in
-                            Image(name)
+                        ForEach(Array(product.galleryImages.enumerated()), id: \.offset) { _, source in
+                            ProductImageView(source: source)
                                 .resizable()
                                 .scaledToFill()
                                 .frame(width: 100, height: 100)
