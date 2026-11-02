@@ -2,25 +2,14 @@
 
 ## Required Git settings
 
-Use **exactly one** of these pairs. Mixing them breaks `COPY` paths.
-
-### Option A — monorepo root (recommended)
-
 | Setting | Value |
 |---------|--------|
-| Base Directory | `/` or empty |
-| Dockerfile | `/Dockerfile` |
 | Build Pack | **Dockerfile** (not Nixpacks) |
+| Dockerfile | `/Dockerfile` |
 
-### Option B — API folder only
+**Base directory** can be `/` or `/api` — root `Dockerfile` auto-detects both layouts.
 
-| Setting | Value |
-|---------|--------|
-| Base Directory | `/api` |
-| Dockerfile | `/api/Dockerfile` |
-| Build Pack | **Dockerfile** |
-
-Do **not** set Base Directory to `/api` while pointing Dockerfile to `/Dockerfile` (root). That copies `api/package.json` from a context that has no `api/` prefix and the build fails.
+Optional: base `/api` + `/api/Dockerfile` also works.
 
 ## Environment variables
 
