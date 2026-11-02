@@ -1,0 +1,12 @@
+.DS_Store
+
+# Xcode
+**/xcuserdata/
+**/DerivedData/
+*.xcuserstate
+*.pbxuser
+
+# API
+api/node_modules/
+api/dist/
+api/.env
